@@ -1,0 +1,20 @@
+fastapi
+uvicorn
+supabase
+python-dotenv
+pydantic
+pydantic-settings
+python-jose[cryptography]
+bcrypt==4.0.1
+passlib==1.7.4
+python-multipart
+pydantic[email]
+pytz
+openai
+pypdf==5.2.0
+pgvector
+
+# Document processing
+pdfplumber==0.10.3
+pytesseract==0.3.10
+Pillow
