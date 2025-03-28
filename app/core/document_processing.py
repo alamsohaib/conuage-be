@@ -1,5 +1,6 @@
 from typing import List, Dict, Tuple, Optional
-import pdfplumber
+import pdfplumber  # For table extraction
+import fitz  # PyMuPDF for image extraction
 import pytesseract
 from PIL import Image
 import base64
@@ -16,7 +17,7 @@ import logging
 pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_PATH
 
 # Set up logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('app.core.document_processing')
 
 def extract_text(page) -> str:
     """Extract text from a PDF page using pdfplumber."""
@@ -78,101 +79,74 @@ def _table_to_html(table_data: List[List[str]]) -> str:
     return ''.join(html)
 
 def extract_images_from_pdf(page) -> List[Dict]:
-    """Extract actual embedded images from a PDF page using pdfplumber."""
+    """Extract images from a PDF page using PyMuPDF."""
     try:
         extracted_images = []
         image_number = 1
         
-        # Get page bounds for size comparison
-        page_width = page.width
-        page_height = page.height
+        # Get list of images on the page
+        image_list = page.get_images(full=True)
+        logger.debug(f"Found {len(image_list)} raw images on page")
         
-        # Extract images from the page
-        for image in page.images:
+        for img_idx, img_info in enumerate(image_list, start=1):
             try:
-                # Skip if image is too large (likely a background or full page)
-                if image['width'] > page_width * 0.9 or image['height'] > page_height * 0.9:
-                    logger.debug(f"Skipping large image (likely full page or background)")
+                xref = img_info[0]  # Cross-reference number
+                base_image = page.parent.extract_image(xref)
+                
+                if base_image is None:
+                    logger.debug(f"Could not extract image {img_idx} - no data returned")
                     continue
                 
-                # Get image bytes and format info
-                img_bytes = image['stream'].get_data()
-                img_format = image.get('format', '').lower()
+                # Get image data and format
+                img_bytes = base_image["image"]
                 
-                # Try to detect format from stream if not in metadata
-                if not img_format:
-                    if img_bytes[:2] == b'\xFF\xD8':
-                        img_format = 'jpeg'
-                    elif img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
-                        img_format = 'png'
-                    elif img_bytes[:2] == b'BM':
-                        img_format = 'bmp'
-                    elif img_bytes[:4] == b'%PDF':
-                        continue  # Skip embedded PDFs
-                    elif img_bytes[:4] == b'GIF8':
-                        img_format = 'gif'
-                
-                # Create BytesIO with image data
+                # Create PIL Image for processing
                 bio = BytesIO(img_bytes)
-                
-                # Try different approaches to open the image
                 try:
                     img = Image.open(bio)
-                except:
-                    # If direct open fails, try forcing the format
-                    if img_format:
-                        bio.seek(0)
-                        img = Image.open(bio, formats=[img_format])
-                    else:
-                        # Try common formats
-                        for fmt in ['jpeg', 'png', 'tiff', 'bmp', 'gif']:
-                            try:
-                                bio.seek(0)
-                                img = Image.open(bio, formats=[fmt])
-                                break
-                            except:
-                                continue
-                        else:
-                            logger.debug("Could not identify image format")
-                            continue
-                
-                # Convert to RGB if necessary
-                if img.mode not in ('RGB', 'RGBA'):
-                    img = img.convert('RGB')
-                
-                # Extract text using OCR
-                ocr_text = pytesseract.image_to_string(img)
-                
-                # Convert image to base64
-                output_bio = BytesIO()
-                img.save(output_bio, format='JPEG', quality=95)
-                image_data = base64.b64encode(output_bio.getvalue()).decode()
-                
-                # Check if image is significant:
-                # 1. Has OCR text, or
-                # 2. Is between 5% and 90% of page size
-                min_size = min(page_width, page_height) * 0.05
-                is_significant = (
-                    ocr_text.strip() or 
-                    (min_size < image['width'] < page_width * 0.9 and 
-                     min_size < image['height'] < page_height * 0.9)
-                )
-                
-                if is_significant:
+                    
+                    # Convert to RGB if necessary
+                    if img.mode not in ('RGB', 'RGBA'):
+                        img = img.convert('RGB')
+                    
+                    # Convert to JPEG format and base64 encode
+                    output_bio = BytesIO()
+                    img.save(output_bio, format='JPEG', quality=95)
+                    img_base64 = base64.b64encode(output_bio.getvalue()).decode('utf-8')
+                    
+                    # Extract text using OCR if enabled
+                    ocr_text = ""
+                    try:
+                        if settings.ENABLE_OCR:
+                            ocr_text = pytesseract.image_to_string(img)
+                            if ocr_text.strip():
+                                logger.debug(f"OCR text found in image {img_idx}")
+                    except Exception as ocr_err:
+                        logger.warning(f"OCR failed for image {img_idx}: {str(ocr_err)}")
+                    
+                    # Add to extracted images
                     extracted_images.append({
                         'image_number': image_number,
-                        'image_data': image_data,
-                        'ocr_text': ocr_text
+                        'image_data': img_base64,
+                        'ocr_text': ocr_text.strip() if ocr_text else ""
                     })
+                    
+                    logger.debug(f"Successfully extracted image {img_idx}")
                     image_number += 1
-            
-            except Exception as img_error:
-                logger.debug(f"Could not process embedded image: {str(img_error)}")
+                    
+                except Exception as pil_err:
+                    logger.error(f"Error processing image {img_idx} with PIL: {str(pil_err)}")
+                    continue
+                    
+            except Exception as img_err:
+                logger.error(f"Error extracting image {img_idx}: {str(img_err)}")
                 continue
         
+        logger.info(f"Successfully extracted {len(extracted_images)} images from page")
         return extracted_images
+        
     except Exception as e:
-        logger.error(f"Error extracting images: {str(e)}")
+        logger.error(f"Error in image extraction: {str(e)}", exc_info=True)
         return []
 
 async def generate_table_description(table_data: List[List[str]]) -> Tuple[str, int]:

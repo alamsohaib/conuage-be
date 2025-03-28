@@ -407,6 +407,29 @@ async def create_message_stream(
 
         if not chat.data:
             raise HTTPException(status_code=404, detail="Chat not found")
+            
+        # Check user's daily token usage
+        user_tokens = db.table('users')\
+            .select(
+                "daily_chat_tokens_used",
+                "daily_document_processing_tokens_used",
+                "daily_token_limit"
+            )\
+            .eq('id', str(current_user["id"]))\
+            .single()\
+            .execute()
+            
+        if not user_tokens.data:
+            raise HTTPException(status_code=404, detail="User token information not found")
+            
+        total_daily_tokens = user_tokens.data['daily_chat_tokens_used'] + user_tokens.data['daily_document_processing_tokens_used']
+        daily_limit = user_tokens.data['daily_token_limit']
+        
+        if total_daily_tokens >= daily_limit:
+            raise HTTPException(
+                status_code=429,  # Too Many Requests
+                detail=f"Daily token limit reached. Used {total_daily_tokens} out of {daily_limit} tokens. Please try again tomorrow."
+            )
 
         # Create MessageCreate instance from form data
         message = MessageCreate(content=content)
@@ -509,17 +532,6 @@ async def create_message_stream(
             }
         ).execute()
 
-        # Get limited chat history
-        chat_history = db.table('messages')\
-            .select('content,role')\
-            .eq('chat_id', str(chat_id))\
-            .order('created_at', desc=True)\
-            .limit(MAX_HISTORY_MESSAGES)\
-            .execute()
-        
-        # Reverse to get chronological order
-        chat_history.data.reverse()
-
         # Build context from similar content
         context = ""
         for item in similar_content.data:
@@ -539,20 +551,22 @@ async def create_message_stream(
                     context += f"(Document ID: {item['additional_info']['document_id']}, Page: {item['additional_info']['page_number']}, Image: {item['additional_info']['image_number']})\n"
             context += "\n"
 
-        # Get chat history
-        messages_response = db.table('messages')\
-            .select('*')\
+        # Get limited chat history
+        chat_history = db.table('messages')\
+            .select('content,role')\
             .eq('chat_id', str(chat_id))\
-            .order('created_at')\
-            .limit(10)\
+            .order('created_at', desc=True)\
+            .limit(MAX_HISTORY_MESSAGES)\
             .execute()
+        
+        # Reverse to get chronological order
+        chat_history.data.reverse()
 
         # Build messages array for OpenAI
         messages = [{"role": "system", "content": "You are a helpful assistant. Use the provided context to answer questions accurately and concisely."}]
 
-        # Add chat history - only last 5 message pairs
-        history = messages_response.data  # Get last 10 messages
-        for msg in history[:-1]:  # Exclude the last message (current user message)
+        # Add chat history
+        for msg in chat_history.data:
             messages.append({
                 "role": msg['role'],
                 "content": msg['content']
@@ -595,6 +609,11 @@ async def create_message_stream(
         # Get model config based on whether image is provided
         model_key = 'vision_chat' if image else 'default_chat'
         model_config = ai_models.get_model(model_key)
+        
+        # Print messages being sent to OpenAI
+        print("\nMessages being sent to OpenAI:")
+        print(json.dumps(messages, indent=2))
+        print("\n")
         
         # Create streaming response
         stream = await get_openai_client().chat.completions.create(

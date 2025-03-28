@@ -70,7 +70,6 @@ class OrganizationDetail(BaseModel):
 
 class OrganizationUpdate(BaseModel):
     """Schema for organization update. All fields are optional to allow partial updates."""
-    name: Optional[str] = Field(None, min_length=1, max_length=255)
     address: Optional[str] = None
     state: Optional[str] = Field(None, max_length=100)
     city: Optional[str] = Field(None, max_length=100)
@@ -83,7 +82,6 @@ class OrganizationUpdate(BaseModel):
         """Pydantic model configuration"""
         json_schema_extra = {
             "example": {
-                "name": "Acme Corp",
                 "address": "123 Business St",
                 "state": "CA",
                 "city": "San Francisco",

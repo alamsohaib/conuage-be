@@ -180,7 +180,6 @@ async def update_user(
 ):
     """Update user details. Only accessible by org_admin."""
     try:
-        print('user_data: ',user_data)
         # Check if user is org_admin
         if current_user["role"] != "org_admin":
             raise HTTPException(status_code=403, detail="Only organization admins can update users")
@@ -189,7 +188,6 @@ async def update_user(
         user = db.table('users').select("*").eq('id', str(user_id)).single().execute()
         if not user.data:
             raise HTTPException(status_code=404, detail="User not found")
-        print('user : ',user_id)
             
         # Check if user belongs to the same organization
         if str(user.data["organization_id"]) != str(current_user["organization_id"]):
@@ -198,20 +196,16 @@ async def update_user(
         # If primary location is being updated, check if it belongs to the organization
         if user_data.location_id and not await check_location_access(current_user, user_data.location_id, db):
             raise HTTPException(status_code=403, detail="Primary location does not belong to your organization")
-        print('data of user: ',user_data.email , user.data["email"])
             
         # If additional locations are being updated, check if they belong to the organization
         if user_data.additional_location_ids:
             for loc_id in user_data.additional_location_ids:
-                print('loc_id: ',loc_id)
                 if not await check_location_access(current_user, loc_id, db):
                     raise HTTPException(status_code=403, detail=f"Location {loc_id} does not belong to your organization")
             
         # If email is being updated, check if it already exists
-        print('data off user: ',user_data.email , user.data["email"])
         if user_data.email and user_data.email != user.data["email"]:
             existing_user = db.table('users').select("*").eq('email', user_data.email).execute()
-            print('existing_user: ',existing_user)
             if existing_user.data:
                 raise HTTPException(status_code=400, detail="Email already registered")
                 
@@ -280,8 +274,6 @@ async def update_user(
             
             # Remove locations that are no longer in the list
             locations_to_remove = current_location_ids - new_location_ids
-            print(locations_to_remove)
-
             if locations_to_remove:
                 db.table('user_locations')\
                     .delete()\
@@ -307,11 +299,9 @@ async def update_user(
         
         # Get updated user with locations
         updated_user = db.table('users').select("*").eq('id', str(user_id)).single().execute()
-        print(update_user)
         locations = await get_user_locations(db, user_id)
         user_response = {**updated_user.data, "locations": locations}
             
         return user_response
     except Exception as e:
-        print(e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -52,26 +52,9 @@ async def check_organization_access(user_data: dict, org_id: UUID, db: Client) -
     """Check if user has access to the specified organization"""
     return str(user_data["organization_id"]) == str(org_id)
 
-# async def check_location_access(user_data: dict, location_id: UUID, db: Client) -> bool:
-#     """Check if user has access to the specified location"""
-#     location = db.table('locations').select("*").eq('id', str(location_id)).single().execute()
-#     print('result: ',location.data["organization_id"]) == str(user_data["organization_id"])
-#     print('result2: ',str(location.data["organization_id"]) , str(user_data["organization_id"]))
-#     print('result3: ', str(location.data["organization_id"]) == str(user_data["organization_id"]))
-#     if not location.data:
-#         return False
-#     return str(location.data["organization_id"]) == str(user_data["organization_id"])
-
 async def check_location_access(user_data: dict, location_id: UUID, db: Client) -> bool:
     """Check if user has access to the specified location"""
-    print('location_id: ',location_id)
     location = db.table('locations').select("*").eq('id', str(location_id)).single().execute()
-    print('location_id: ',location)
-    
-    # Check if the result is empty or contains no data
     if not location.data:
-        print("No location found")
         return False
-
-    # Check if organization_id matches
     return str(location.data["organization_id"]) == str(user_data["organization_id"])

@@ -15,7 +15,6 @@ import json
 from typing import Optional
 from app.core.config import settings
 from app.core.auth import get_current_user
-from fastapi.middleware.cors import CORSMiddleware
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -288,12 +287,12 @@ async def verify_email(
         
         # Check if code is expired
         expires_at = datetime.fromisoformat(code_data['expires_at'])
-        # if expires_at < get_utc_now():
-            # raise HTTPException(status_code=400, detail="Verification code has expired")
+        if expires_at < get_utc_now():
+            raise HTTPException(status_code=400, detail="Verification code has expired")
             
         # Verify code
-        # if not is_valid_verification_code(code_data['code'], verification_data.code):
-            # raise HTTPException(status_code=400, detail="Invalid verification code")
+        if not is_valid_verification_code(code_data['code'], verification_data.code):
+            raise HTTPException(status_code=400, detail="Invalid verification code")
             
         # Mark code as used
         db.table('verification_codes').update({"used": True}).eq('id', code_data['id']).execute()
@@ -379,7 +378,6 @@ async def login(
         # Check if user is active
         user_status = user_data.get("status")
         print(f"User status: {user_status}")
-        user_status = "active"
         if user_status != "active":
             raise HTTPException(
                 status_code=401,

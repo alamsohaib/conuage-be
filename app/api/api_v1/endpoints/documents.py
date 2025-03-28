@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import List
 from urllib.parse import urlparse
 from urllib.parse import urljoin
+import fitz
 
 from app.db.supabase import get_db, get_supabase
 from app.schemas.base import (
@@ -401,6 +402,13 @@ async def process_document(
             
         if not document.data:
             raise HTTPException(status_code=404, detail="Document not found")
+            
+        # Check if document status is valid for processing
+        if document.data['status'] != 'added':
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Document cannot be processed. Current status: {document.data['status']}. Only documents with 'added' status can be processed."
+            )
         
         # Get folder to check permissions
         folder = db.table('folders')\
@@ -421,6 +429,29 @@ async def process_document(
             
         if not location_access.data:
             raise HTTPException(status_code=403, detail="No access to this location")
+        
+        # Check user's daily token usage
+        user_tokens = db.table('users')\
+            .select(
+                "daily_chat_tokens_used",
+                "daily_document_processing_tokens_used",
+                "daily_token_limit"
+            )\
+            .eq('id', str(current_user["id"]))\
+            .single()\
+            .execute()
+            
+        if not user_tokens.data:
+            raise HTTPException(status_code=404, detail="User token information not found")
+            
+        total_daily_tokens = user_tokens.data['daily_chat_tokens_used'] + user_tokens.data['daily_document_processing_tokens_used']
+        daily_limit = user_tokens.data['daily_token_limit']
+        
+        if total_daily_tokens >= daily_limit:
+            raise HTTPException(
+                status_code=429,  # Too Many Requests
+                detail=f"Daily token limit reached. Used {total_daily_tokens} out of {daily_limit} tokens. Please try again tomorrow."
+            )
         
         # Check if user is org_admin or manager
         if current_user["role"] not in ['org_admin', 'manager']:
@@ -517,14 +548,19 @@ async def process_document_background(
         
         # Process the PDF using the signed URL
         try:
-            # Open PDF from URL
+            # Download PDF content
             response = urllib.request.urlopen(temp_url['signedURL'])
             pdf_bytes = io.BytesIO(response.read())
-            pdf_reader = pypdf.PdfReader(pdf_bytes)
-            pages = pdf_reader.pages
             
-            # Also open with pdfplumber for table/image extraction
+            # Open with pdfplumber for text and table extraction
             plumber_pdf = pdfplumber.open(pdf_bytes)
+            
+            # Open with PyMuPDF for image extraction
+            pdf_bytes.seek(0)  # Reset buffer position
+            fitz_pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+            
+            logger.debug(f"Successfully opened PDF with {len(plumber_pdf.pages)} pages")
+            
         except Exception as e:
             raise Exception(f"Error reading PDF file: {str(e)}")
         
@@ -534,10 +570,13 @@ async def process_document_background(
         total_image_tokens = 0
         total_vision_tokens = 0
         
-        for page_number, page in enumerate(pages, start=1):
+        for page_number, plumber_page in enumerate(plumber_pdf.pages, start=1):
             try:
-                # Extract and process text using the extract_text function
-                text_content = extract_text(page)
+                # Get corresponding PyMuPDF page
+                fitz_page = fitz_pdf[page_number - 1]
+                
+                # Extract and process text using pdfplumber
+                text_content = extract_text(plumber_page)
                 
                 if text_content and text_content.strip():
                     text_embeddings, text_tokens = await get_embeddings(text_content)
@@ -557,25 +596,23 @@ async def process_document_background(
                             .execute()
                     except APIError as e:
                         logger.error(f"Error saving text embedding: {str(e)}")
-            except Exception as e:
-                logger.error(f"Error processing text on page {page_number}: {str(e)}")
-                continue
-            
-            # Extract and process tables using pdfplumber page
-            try:
-                tables = extract_tables_from_pdf(plumber_pdf.pages[page_number - 1])
+                
+                # Extract and process tables using pdfplumber
+                tables = extract_tables_from_pdf(plumber_page)
+                
+                # Extract and process images using PyMuPDF
+                images = extract_images_from_pdf(fitz_page)
+                
+                # Process tables
                 for table in tables:
                     try:
-                        # Generate table description
                         description, table_tokens = await generate_table_description(table)
                         total_table_tokens += table_tokens
                         
                         if description and description.strip():
-                            # Get table embedding
                             table_embedding, embedding_tokens = await get_embeddings(description)
                             total_table_tokens += embedding_tokens
                             
-                            # Save table metadata
                             try:
                                 db.table('document_tables')\
                                     .insert({
@@ -591,22 +628,17 @@ async def process_document_background(
                                     .execute()
                             except APIError as e:
                                 logger.error(f"Error saving table: {str(e)}")
-                                continue
                     except Exception as e:
-                        logger.error(f"Error processing table on page {page_number}: {str(e)}")
+                        logger.error(f"Error processing table: {str(e)}")
                         continue
-            except Exception as e:
-                logger.error(f"Error extracting tables from page {page_number}: {str(e)}")
-            
-            # Extract and process images
-            try:
-                images = extract_images_from_pdf(plumber_pdf.pages[page_number - 1])
+                
+                # Process images
                 for image in images:
                     try:
-                        # Generate image description using vision model
+                        # Generate image description
                         description, vision_tokens = await generate_image_description(
                             image['image_data'],
-                            image.get('ocr_text')
+                            image.get('ocr_text', '')
                         )
                         total_vision_tokens += vision_tokens
                         
@@ -620,11 +652,10 @@ async def process_document_background(
                                 supabase_client
                             )
                             
-                            # Get image embedding
+                            # Get embedding for the description
                             image_embedding, image_tokens = await get_embeddings(description)
                             total_image_tokens += image_tokens
                             
-                            # Save image metadata
                             try:
                                 db.table('document_images')\
                                     .insert({
@@ -639,12 +670,13 @@ async def process_document_background(
                                     .execute()
                             except APIError as e:
                                 logger.error(f"Error saving image: {str(e)}")
-                                continue
                     except Exception as e:
-                        logger.error(f"Error processing image on page {page_number}: {str(e)}")
+                        logger.error(f"Error processing image: {str(e)}")
                         continue
+                    
             except Exception as e:
-                logger.error(f"Error extracting images from page {page_number}: {str(e)}")
+                logger.error(f"Error processing page {page_number}: {str(e)}")
+                continue
         
         # Log tokens using ai_models
         if total_text_tokens > 0:
@@ -697,7 +729,7 @@ async def process_document_background(
                 .update({
                     'status': 'processed',
                     'updated_at': 'NOW()',
-                    'page_count': len(pages)
+                    'page_count': len(plumber_pdf.pages)
                 })\
                 .eq('id', str(document_id))\
                 .execute()

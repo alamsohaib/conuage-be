@@ -11,6 +11,9 @@ from supabase import Client
 from datetime import datetime
 from uuid import UUID
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 class UUIDEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -23,13 +26,36 @@ class UUIDEncoder(json.JSONEncoder):
 router = APIRouter()
 
 
-@router.get("/", response_model=List[OrganizationInDB])
-async def list_organizations(db: Client = Depends(get_db)):
-    try:
-        response = db.table('organizations').select("*").execute()
-        return response.data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.get("/", response_model=List[OrganizationInDB])
+# async def list_organizations(db: Client = Depends(get_db)):
+#     try:
+#         response = db.table('organizations').select("*").execute()
+#         return response.data
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
+
+# @router.post("/", response_model=OrganizationInDB)
+# async def create_organization(org: OrganizationCreate, db: Client = Depends(get_db)):
+#     try:
+#         now = datetime.utcnow().isoformat()
+#         org_data = json.loads(json.dumps(org.model_dump(exclude_unset=True), cls=UUIDEncoder))
+        
+#         # Remove None values for optional UUID fields
+#         if org_data.get('primary_contact_id') is None:
+#             org_data.pop('primary_contact_id', None)
+#         if org_data.get('default_location_id') is None:
+#             org_data.pop('default_location_id', None)
+            
+#         org_data.update({
+#             "created_at": now,
+#             "updated_at": now
+#         })
+        
+#         response = db.table('organizations').insert(org_data).execute()
+#         return response.data[0]
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/my-organization", response_model=OrganizationDetail)
@@ -43,39 +69,66 @@ async def get_organization(
         if current_user["role"] != "org_admin":
             raise HTTPException(status_code=403, detail="Only organization admins can view organization details")
             
-        org_id = current_user["organization_id"]
+        org_id = current_user.get("organization_id")
+        if not org_id:
+            raise HTTPException(status_code=400, detail="User is not associated with any organization")
             
         # Get organization with all fields
-        org = db.table('organizations')\
-            .select("*")\
-            .eq('id', str(org_id))\
-            .single()\
-            .execute()
-            
-        if not org.data:
+        try:
+            org = db.table('organizations')\
+                .select("*")\
+                .eq('id', str(org_id))\
+                .single()\
+                .execute()
+                
+            if not org.data:
+                raise HTTPException(status_code=404, detail="Organization not found")
+        except Exception as db_error:
+            logger.error(f"Database error fetching organization {org_id}: {str(db_error)}")
             raise HTTPException(status_code=404, detail="Organization not found")
             
         # Get primary contact details if set
         primary_contact = None
         if org.data.get('primary_contact_id'):
-            contact = db.table('users')\
-                .select("id,email,first_name,last_name")\
-                .eq('id', org.data['primary_contact_id'])\
-                .single()\
-                .execute()
-            if contact.data:
-                primary_contact = contact.data
+            try:
+                contact = db.table('users')\
+                    .select("id,email,first_name,last_name")\
+                    .eq('id', org.data['primary_contact_id'])\
+                    .single()\
+                    .execute()
+                if contact.data:
+                    primary_contact = contact.data
+                else:
+                    # Primary contact not found, clear the reference
+                    logger.warning(f"Primary contact {org.data['primary_contact_id']} not found, clearing reference")
+                    db.table('organizations')\
+                        .update({"primary_contact_id": None, "updated_at": datetime.utcnow().isoformat()})\
+                        .eq('id', str(org_id))\
+                        .execute()
+            except Exception as contact_error:
+                logger.warning(f"Error fetching primary contact: {str(contact_error)}")
+                # Clear invalid primary contact reference
+                try:
+                    db.table('organizations')\
+                        .update({"primary_contact_id": None, "updated_at": datetime.utcnow().isoformat()})\
+                        .eq('id', str(org_id))\
+                        .execute()
+                except Exception as clear_error:
+                    logger.error(f"Failed to clear invalid primary contact: {str(clear_error)}")
                 
         # Get default location details if set
         default_location = None
         if org.data.get('default_location_id'):
-            location = db.table('locations')\
-                .select("id,name")\
-                .eq('id', org.data['default_location_id'])\
-                .single()\
-                .execute()
-            if location.data:
-                default_location = location.data
+            try:
+                location = db.table('locations')\
+                    .select("id,name")\
+                    .eq('id', org.data['default_location_id'])\
+                    .single()\
+                    .execute()
+                if location.data:
+                    default_location = location.data
+            except Exception as location_error:
+                logger.warning(f"Error fetching default location: {str(location_error)}")
                 
         # Combine all data
         org_data = {
@@ -86,87 +139,11 @@ async def get_organization(
         
         return OrganizationDetail(**org_data)
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-    """Get detailed organization information"""
-    try:
-        # Check if user has access to this organization
-        if not await check_organization_access(current_user, org_id, db):
-            raise HTTPException(status_code=403, detail="Access to this organization not allowed")
-            
-        # Check if user is org_admin
-        if current_user["role"] != "org_admin":
-            raise HTTPException(status_code=403, detail="Only organization admins can view organization details")
-            
-        # Get organization with all fields
-        org = db.table('organizations')\
-            .select("*")\
-            .eq('id', str(org_id))\
-            .single()\
-            .execute()
-            
-        if not org.data:
-            raise HTTPException(status_code=404, detail="Organization not found")
-            
-        # Get primary contact details if set
-        primary_contact = None
-        if org.data.get('primary_contact_id'):
-            contact = db.table('users')\
-                .select("id,email,first_name,last_name")\
-                .eq('id', org.data['primary_contact_id'])\
-                .single()\
-                .execute()
-            if contact.data:
-                primary_contact = contact.data
-                
-        # Get default location details if set
-        default_location = None
-        if org.data.get('default_location_id'):
-            location = db.table('locations')\
-                .select("id,name")\
-                .eq('id', org.data['default_location_id'])\
-                .single()\
-                .execute()
-            if location.data:
-                default_location = location.data
-                
-        # Combine all data
-        org_data = {
-            **org.data,
-            "primary_contact": primary_contact,
-            "default_location": default_location
-        }
-        
-        return OrganizationDetail(**org_data)
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/", response_model=OrganizationInDB)
-async def create_organization(org: OrganizationCreate, db: Client = Depends(get_db)):
-    try:
-        now = datetime.utcnow().isoformat()
-        org_data = json.loads(json.dumps(org.model_dump(exclude_unset=True), cls=UUIDEncoder))
-        
-        # Remove None values for optional UUID fields
-        if org_data.get('primary_contact_id') is None:
-            org_data.pop('primary_contact_id', None)
-        if org_data.get('default_location_id') is None:
-            org_data.pop('default_location_id', None)
-            
-        org_data.update({
-            "created_at": now,
-            "updated_at": now
-        })
-        
-        response = db.table('organizations').insert(org_data).execute()
-        return response.data[0]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in get_organization: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.patch("/my-organization", response_model=OrganizationDetail)
@@ -212,9 +189,15 @@ async def update_organization(
                 
         # Handle default location update
         if "default_location_id" in update_data:
-            location_id = update_data["default_location_id"]
-            if location_id:
-                # Verify location exists and belongs to organization
+            location_id = update_data.get("default_location_id")
+            if not location_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Default location cannot be set to null"
+                )
+                
+            # Verify location exists and belongs to organization
+            try:
                 location = db.table('locations')\
                     .select("id")\
                     .eq('id', str(location_id))\
@@ -226,6 +209,12 @@ async def update_organization(
                         status_code=400,
                         detail="Invalid location ID or location does not belong to this organization"
                     )
+            except Exception as loc_error:
+                logger.error(f"Error verifying location {location_id}: {str(loc_error)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid location ID"
+                )
                     
         # Update organization
         update_data["updated_at"] = datetime.utcnow().isoformat()
@@ -240,78 +229,8 @@ async def update_organization(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-    """Update organization details"""
-    try:
-        # Check if user has access to this organization
-        if not await check_organization_access(current_user, org_id, db):
-            raise HTTPException(status_code=403, detail="Access to this organization not allowed")
-            
-        # Check if user is org_admin
-        if current_user["role"] != "org_admin":
-            raise HTTPException(status_code=403, detail="Only organization admins can update organization details")
-            
-        # Get current organization
-        org = db.table('organizations')\
-            .select("*")\
-            .eq('id', str(org_id))\
-            .single()\
-            .execute()
-            
-        if not org.data:
-            raise HTTPException(status_code=404, detail="Organization not found")
-            
-        # Prepare update data
-        update_data = org_update.dict(exclude_unset=True)
-        
-        # Handle primary contact update if email provided
-        if "primary_contact_email" in update_data:
-            email = update_data.pop("primary_contact_email")
-            if email:
-                # Find user by email
-                user = db.table('users')\
-                    .select("id")\
-                    .eq('email', email)\
-                    .single()\
-                    .execute()
-                if not user.data:
-                    raise HTTPException(status_code=404, detail=f"User with email {email} not found")
-                update_data["primary_contact_id"] = user.data["id"]
-                
-        # Handle default location update
-        if "default_location_id" in update_data:
-            location_id = update_data["default_location_id"]
-            if location_id:
-                # Verify location exists and belongs to organization
-                location = db.table('locations')\
-                    .select("id")\
-                    .eq('id', str(location_id))\
-                    .eq('organization_id', str(org_id))\
-                    .single()\
-                    .execute()
-                if not location.data:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid location ID or location does not belong to this organization"
-                    )
-                    
-        # Update organization
-        update_data["updated_at"] = datetime.utcnow().isoformat()
-        db.table('organizations')\
-            .update(update_data)\
-            .eq('id', str(org_id))\
-            .execute()
-            
-        # Return updated organization
-        return await get_organization(org_id, current_user, db)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in update_organization: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/pricing-plans", response_model=List[PricingPlan])
@@ -401,7 +320,8 @@ async def update_subscription(
     except Exception as e:
         if isinstance(e, HTTPException):
             raise e
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in update_subscription: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/subscription", response_model=PricingPlanSubscriptionResponse)
@@ -444,4 +364,5 @@ async def get_subscription(
     except Exception as e:
         if isinstance(e, HTTPException):
             raise e
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in get_subscription: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")

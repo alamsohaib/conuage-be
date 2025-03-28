@@ -9,10 +9,10 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # CORS Configuration
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
+    BACKEND_CORS_ORIGINS: List[AnyHttpUrl | str] = []
 
     @validator("BACKEND_CORS_ORIGINS", pre=True)
-    def assemble_cors_origins(cls, v: str | List[str]) -> List[str] | str:
+    def assemble_cors_origins(cls, v: str | List[str]) -> List[str]:
         if isinstance(v, str) and not v.startswith("["):
             return [i.strip() for i in v.split(",")]
         elif isinstance(v, (list, str)):
@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     
     # Document Processing Configuration
     TESSERACT_PATH: str = "C:/Program Files/Tesseract-OCR/tesseract.exe"  # Default Windows path
+    ENABLE_OCR: bool = True  # Enable OCR by default for image text extraction
     
     # JWT Configuration
     JWT_SECRET_KEY: str
