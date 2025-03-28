@@ -13,8 +13,9 @@ pytz
 openai
 pypdf==5.2.0
 pgvector
+PyMuPDF
 
 # Document processing
 pdfplumber==0.10.3
 pytesseract==0.3.10
-Pillow==10.1.0
+Pillow
