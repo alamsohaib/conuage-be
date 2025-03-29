@@ -170,8 +170,8 @@ async def update_organization(
         if not org.data:
             raise HTTPException(status_code=404, detail="Organization not found")
             
-        # Prepare update data
-        update_data = org_update.dict(exclude_unset=True)
+        # Prepare update data and serialize UUIDs
+        update_data = json.loads(json.dumps(org_update.dict(exclude_unset=True), cls=UUIDEncoder))
         
         # Handle primary contact update if email provided
         if "primary_contact_email" in update_data:
@@ -197,34 +197,34 @@ async def update_organization(
                 )
                 
             # Verify location exists and belongs to organization
-            try:
-                location = db.table('locations')\
-                    .select("id")\
-                    .eq('id', str(location_id))\
-                    .eq('organization_id', str(org_id))\
-                    .single()\
-                    .execute()
-                if not location.data:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid location ID or location does not belong to this organization"
-                    )
-            except Exception as loc_error:
-                logger.error(f"Error verifying location {location_id}: {str(loc_error)}")
+            location = db.table('locations')\
+                .select("id")\
+                .eq('id', location_id)\
+                .eq('organization_id', str(org_id))\
+                .single()\
+                .execute()
+                
+            if not location.data:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Invalid location ID"
+                    status_code=404,
+                    detail=f"Location {location_id} not found or does not belong to your organization"
                 )
-                    
-        # Update organization
+                
+        # Add updated_at timestamp
         update_data["updated_at"] = datetime.utcnow().isoformat()
-        db.table('organizations')\
+        
+        # Update organization
+        response = db.table('organizations')\
             .update(update_data)\
             .eq('id', str(org_id))\
             .execute()
             
-        # Return updated organization
-        return await get_organization(current_user, db)
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to update organization")
+            
+        # Get updated organization details for response
+        updated_org = await get_organization(current_user, db)
+        return updated_org
         
     except HTTPException:
         raise

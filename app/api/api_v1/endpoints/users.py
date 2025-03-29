@@ -193,16 +193,6 @@ async def update_user(
         if str(user.data["organization_id"]) != str(current_user["organization_id"]):
             raise HTTPException(status_code=403, detail="Access to this user not allowed")
             
-        # If primary location is being updated, check if it belongs to the organization
-        if user_data.location_id and not await check_location_access(current_user, user_data.location_id, db):
-            raise HTTPException(status_code=403, detail="Primary location does not belong to your organization")
-            
-        # If additional locations are being updated, check if they belong to the organization
-        if user_data.additional_location_ids:
-            for loc_id in user_data.additional_location_ids:
-                if not await check_location_access(current_user, loc_id, db):
-                    raise HTTPException(status_code=403, detail=f"Location {loc_id} does not belong to your organization")
-            
         # If email is being updated, check if it already exists
         if user_data.email and user_data.email != user.data["email"]:
             existing_user = db.table('users').select("*").eq('email', user_data.email).execute()
@@ -225,79 +215,80 @@ async def update_user(
         update_data = user_data.model_dump(exclude={"location_id", "additional_location_ids"}, exclude_unset=True)
         update_data["updated_at"] = datetime.utcnow().isoformat()
         
-        response = db.table('users').update(update_data).eq('id', str(user_id)).execute()
-        if not response.data:
-            raise HTTPException(status_code=500, detail="Failed to update user")
-            
-        # Update locations if provided
+        if update_data:  # Only update if there are fields to update
+            response = db.table('users').update(update_data).eq('id', str(user_id)).execute()
+            if not response.data:
+                raise HTTPException(status_code=500, detail="Failed to update user")
+        
+        # Handle location updates
         now = datetime.utcnow().isoformat()
         
-        # Update primary location if provided
-        if user_data.location_id:
-            # Set all locations to non-primary
-            db.table('user_locations').update({"is_primary": False}).eq('user_id', str(user_id)).execute()
-            
-            # Check if location already exists for user
-            existing_location = db.table('user_locations')\
-                .select("*")\
-                .eq('user_id', str(user_id))\
-                .eq('location_id', str(user_data.location_id))\
-                .execute()
-                
-            if existing_location.data:
-                # Update existing location to primary
-                db.table('user_locations').update({
-                    "is_primary": True,
-                    "updated_at": now
-                }).eq('id', existing_location.data[0]["id"]).execute()
-            else:
-                # Create new primary location
-                db.table('user_locations').insert({
-                    "user_id": str(user_id),
-                    "location_id": str(user_data.location_id),
-                    "is_primary": True,
-                    "created_at": now,
-                    "updated_at": now
-                }).execute()
-        
-        # Update additional locations if provided
-        if user_data.additional_location_ids is not None:
-            # Get current non-primary locations
+        # Only process location updates if either location_id or additional_location_ids is provided
+        if user_data.location_id is not None or user_data.additional_location_ids is not None:
+            # Get current locations
             current_locations = db.table('user_locations')\
                 .select("*")\
                 .eq('user_id', str(user_id))\
-                .eq('is_primary', False)\
                 .execute()
-                
-            current_location_ids = {str(loc["location_id"]) for loc in current_locations.data}
-            new_location_ids = {str(loc_id) for loc_id in user_data.additional_location_ids}
             
-            # Remove locations that are no longer in the list
-            locations_to_remove = current_location_ids - new_location_ids
-            if locations_to_remove:
-                db.table('user_locations')\
-                    .delete()\
-                    .eq('user_id', str(user_id))\
-                    .eq('is_primary', False)\
-                    .in_('location_id', list(locations_to_remove))\
-                    .execute()
+            current_primary = next((loc for loc in current_locations.data if loc["is_primary"]), None)
             
-            # Add new locations
-            locations_to_add = new_location_ids - current_location_ids
-            if locations_to_add:
-                new_locations = [
-                    {
-                        "user_id": str(user_id),
-                        "location_id": loc_id,
-                        "is_primary": False,
-                        "created_at": now,
-                        "updated_at": now
-                    }
-                    for loc_id in locations_to_add
-                ]
-                db.table('user_locations').insert(new_locations).execute()
+            # Determine the primary location
+            primary_location_id = None
+            if user_data.location_id:
+                # Verify the location belongs to the organization
+                if not await check_location_access(current_user, user_data.location_id, db):
+                    raise HTTPException(status_code=403, detail="Primary location does not belong to your organization")
+                primary_location_id = str(user_data.location_id)
+            elif current_primary:
+                # Keep existing primary if not changing
+                primary_location_id = str(current_primary["location_id"])
+            elif user_data.additional_location_ids and len(user_data.additional_location_ids) > 0:
+                # Use first additional location as primary if no primary specified
+                primary_location_id = str(user_data.additional_location_ids[0])
+            
+            if not primary_location_id:
+                raise HTTPException(status_code=400, detail="User must have at least one primary location")
+            
+            # Build the complete list of locations
+            all_location_ids = set()
+            all_location_ids.add(primary_location_id)
+            
+            if user_data.additional_location_ids is not None:
+                for loc_id in user_data.additional_location_ids:
+                    if not await check_location_access(current_user, loc_id, db):
+                        raise HTTPException(status_code=403, detail=f"Location {loc_id} does not belong to your organization")
+                    all_location_ids.add(str(loc_id))
+            
+            # Delete existing locations
+            db.table('user_locations').delete().eq('user_id', str(user_id)).execute()
+            
+            # Insert primary location
+            db.table('user_locations').insert({
+                "user_id": str(user_id),
+                "location_id": primary_location_id,
+                "is_primary": True,
+                "created_at": now,
+                "updated_at": now
+            }).execute()
+            
+            # Insert additional locations (excluding primary)
+            additional_locations = [
+                {
+                    "user_id": str(user_id),
+                    "location_id": loc_id,
+                    "is_primary": False,
+                    "created_at": now,
+                    "updated_at": now
+                }
+                for loc_id in all_location_ids
+                if loc_id != primary_location_id
+            ]
+            
+            if additional_locations:
+                db.table('user_locations').insert(additional_locations).execute()
         
-        # Get updated user with locations
+        # Get updated user with locations for response
         updated_user = db.table('users').select("*").eq('id', str(user_id)).single().execute()
         locations = await get_user_locations(db, user_id)
         user_response = {**updated_user.data, "locations": locations}
