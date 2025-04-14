@@ -15,6 +15,8 @@ import json
 from typing import Optional
 from app.core.config import settings
 from app.core.auth import get_current_user
+from app.core.mail import send_verification_email as send_mail_verification
+from app.core.mail import send_reset_code_email as send_mail_reset_code
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -31,14 +33,30 @@ def get_utc_now() -> datetime:
     return datetime.now(pytz.UTC)
 
 async def send_verification_email(email: str, code: str):
-    # TODO: Implement email sending logic
-    # For now, just print the code
+    """Send verification code via email and print to console"""
+    # Print to console for development/debugging
     print(f"Verification code for {email}: {code}")
+    # Send actual email
+    try:
+        await send_mail_verification(email, code)
+        print(f"Verification email sent successfully to {email}")
+    except Exception as e:
+        print(f"Error sending verification email to {email}: {str(e)}")
+        # Don't raise the exception - we still want the API to work even if email fails
+        pass
 
 async def send_reset_code_email(email: str, code: str):
-    # TODO: Implement email sending logic
-    # For now, just print the code
+    """Send password reset code via email and print to console"""
+    # Print to console for development/debugging
     print(f"Password reset code for {email}: {code}")
+    # Send actual email
+    try:
+        await send_mail_reset_code(email, code)
+        print(f"Password reset email sent successfully to {email}")
+    except Exception as e:
+        print(f"Error sending password reset email to {email}: {str(e)}")
+        # Don't raise the exception - we still want the API to work even if email fails
+        pass
 
 @router.post("/signup")
 async def signup(

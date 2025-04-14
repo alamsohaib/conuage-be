@@ -431,6 +431,51 @@ async def create_message_stream(
                 detail=f"Daily token limit reached. Used {total_daily_tokens} out of {daily_limit} tokens. Please try again tomorrow."
             )
 
+        # Check if this is the first message in the chat
+        messages = db.table('messages')\
+            .select('id')\
+            .eq('chat_id', str(chat_id))\
+            .execute()
+            
+        if not messages.data:
+            # This is the first message, generate a chat name
+            model_config = ai_models.get_model('default_chat')
+            name_response = await get_openai_client().chat.completions.create(
+                model=model_config.model_id,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Generate a brief, descriptive title (max 6 words) for a chat that starts with this message. Return only the title, no quotes or extra text."
+                    },
+                    {
+                        "role": "user",
+                        "content": content
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=20
+            )
+            
+            chat_name = name_response.choices[0].message.content.strip()
+            name_tokens = name_response.usage.total_tokens
+            
+            # Update chat name
+            db.table('chats')\
+                .update({'name': chat_name})\
+                .eq('id', str(chat_id))\
+                .execute()
+                
+            # Log token usage for name generation
+            await ai_models.log_token_usage(
+                db=db,
+                user_id=str(current_user['id']),
+                organization_id=str(current_user['organization_id']),
+                model_key='default_chat',
+                tokens_used=name_tokens,
+                operation_type=OperationType.CHAT,
+                chat_id=str(chat_id)
+            )
+
         # Create MessageCreate instance from form data
         message = MessageCreate(content=content)
         
@@ -563,7 +608,7 @@ async def create_message_stream(
         chat_history.data.reverse()
 
         # Build messages array for OpenAI
-        messages = [{"role": "system", "content": "You are a helpful assistant. Use the provided context to answer questions accurately and concisely."}]
+        messages = [{"role": "system", "content": "You are a helpful assistant named Bob. Use the provided context to answer questions accurately and concisely."}]
 
         # Add chat history
         for msg in chat_history.data:

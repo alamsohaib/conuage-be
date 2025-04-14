@@ -1,6 +1,7 @@
 from typing import List, Dict, Annotated
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from postgrest import Client
 from postgrest.exceptions import APIError
 import json
@@ -764,6 +765,78 @@ async def process_document_background(
                 plumber_pdf.close()
         except:
             pass
+
+@router.get("/documents/{document_id}/download")
+async def download_document(
+    document_id: UUID,
+    current_user: Dict = Depends(get_current_user),
+    db: Client = Depends(get_db),
+    supabase_client: Client = Depends(get_supabase)
+) -> StreamingResponse:
+    """Download a document file
+    
+    Args:
+        document_id: UUID of the document to download
+        current_user: Current authenticated user
+        db: Database client
+        supabase_client: Supabase client
+        
+    Returns:
+        StreamingResponse with the file content
+        
+    Raises:
+        HTTPException: If document not found or user doesn't have access
+    """
+    # Get document details
+    document = db.table('documents')\
+        .select("*")\
+        .eq('id', str(document_id))\
+        .single()\
+        .execute()
+        
+    if not document.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    # Get folder details to check location access
+    folder = db.table('folders')\
+        .select("*")\
+        .eq('id', document.data['folder_id'])\
+        .single()\
+        .execute()
+        
+    if not folder.data:
+        raise HTTPException(status_code=404, detail="Document folder not found")
+        
+    # Check if user has access to location
+    location_access = db.table('user_locations')\
+        .select("*")\
+        .eq('user_id', str(current_user["id"]))\
+        .eq('location_id', str(folder.data["location_id"]))\
+        .execute()
+        
+    if not location_access.data:
+        raise HTTPException(status_code=403, detail="No access to this document's location")
+    
+    try:
+        # Get file from storage
+        file_path = document.data['file_path']
+        response = supabase_client.storage.from_('documents').download(file_path)
+        
+        # Create an async generator to stream the file
+        async def iterfile():
+            yield response
+            
+        # Set appropriate headers for file download
+        headers = {
+            'Content-Disposition': f'attachment; filename="{document.data["name"]}"',
+            'Content-Type': document.data.get('file_type', 'application/octet-stream')
+        }
+        
+        return StreamingResponse(iterfile(), headers=headers)
+        
+    except Exception as e:
+        logger.error(f"Error downloading document: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to download document")
 
 @router.delete("/documents/{document_id}", response_model=DocumentDeleteResponse)
 async def delete_document(
