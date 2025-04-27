@@ -7,6 +7,7 @@ from app.schemas.base import (
 )
 from app.core.auth import get_current_user, check_organization_access, check_location_access
 from app.core.security import get_password_hash
+from app.core.mail import send_account_setup_email
 from supabase import Client
 from datetime import datetime
 from uuid import UUID
@@ -24,8 +25,36 @@ router = APIRouter()
 
 async def get_user_locations(db: Client, user_id: UUID) -> List[UserLocationResponse]:
     """Helper function to get user locations"""
-    locations = db.table('user_locations').select("*").eq('user_id', str(user_id)).execute()
-    return [UserLocationResponse(**loc) for loc in locations.data]
+    # Get user_locations
+    user_locations = db.table('user_locations')\
+        .select("*")\
+        .eq('user_id', str(user_id))\
+        .execute()
+
+    if not user_locations.data:
+        return []
+
+    # Get location details for each user_location
+    location_responses = []
+    for ul in user_locations.data:
+        location = db.table('locations')\
+            .select("name")\
+            .eq('id', ul['location_id'])\
+            .single()\
+            .execute()
+        
+        if location.data:
+            location_response = {
+                "id": ul['id'],
+                "location_id": ul['location_id'],
+                "location_name": location.data['name'],
+                "is_primary": ul['is_primary'],
+                "created_at": ul['created_at'],
+                "updated_at": ul['updated_at']
+            }
+            location_responses.append(UserLocationResponse(**location_response))
+    
+    return location_responses
 
 @router.get("/", response_model=List[UserResponse])
 async def list_users(
@@ -117,6 +146,31 @@ async def create_user(
         if user_data.status not in valid_statuses:
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
         
+        # Get organization's pricing plan details
+        org = db.table('organizations')\
+            .select("selected_pricing_plan_id")\
+            .eq('id', current_user["organization_id"])\
+            .single()\
+            .execute()
+            
+        daily_token_limit = 0  # Default value
+        
+        if org.data and org.data.get('selected_pricing_plan_id'):
+            # Get pricing plan details
+            pricing_plan = db.table('pricing_plans')\
+                .select("daily_token_limit_per_user")\
+                .eq('id', org.data['selected_pricing_plan_id'])\
+                .single()\
+                .execute()
+                
+            if pricing_plan.data:
+                daily_token_limit = pricing_plan.data.get('daily_token_limit_per_user', 0)
+                print(f"Setting daily_token_limit to {daily_token_limit} from pricing plan")
+            else:
+                print("WARNING: Selected pricing plan not found")
+        else:
+            print("WARNING: Organization has no selected pricing plan")
+        
         # Create user
         now = datetime.utcnow().isoformat()
         user_create_data = {
@@ -129,7 +183,9 @@ async def create_user(
             "status": user_data.status,
             "email_verified": True,  # Since org_admin is creating the user
             "created_at": now,
-            "updated_at": now
+            "updated_at": now,
+            "daily_token_limit": daily_token_limit,  # Set the daily token limit from pricing plan
+            "last_daily_reset": now  # Initialize the daily reset timestamp
         }
         
         # Create user
@@ -166,6 +222,14 @@ async def create_user(
         # Get all locations for response
         locations = await get_user_locations(db, user["id"])
         user_response = {**user, "locations": locations}
+            
+        # Send account setup email
+        await send_account_setup_email(
+            email_to=user["email"],
+            first_name=user["first_name"],
+            role=user["role"],
+            locations=locations
+        )
             
         return user_response
     except Exception as e:

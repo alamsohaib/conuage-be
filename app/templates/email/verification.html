@@ -1,8 +1,46 @@
+<!DOCTYPE html>
 <html>
-<body>
-    <h1>Email Verification</h1>
-    <p>Hello,</p>
-    <p>Your verification code is: <strong>{{ code }}</strong></p>
-    <p>This code will expire in 10 minutes.</p>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Verification</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f5f7fa;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; padding: 0; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <!-- Header with logo -->
+        <div style="padding: 32px 24px; text-align: left; border-bottom: 1px solid #e1e4e8;">
+            <div style="display: flex; align-items: center;">
+                <img src="https://bqotiwmwnsjfgadrnneo.supabase.co/storage/v1/object/public/logo//logo.jpg" alt="Conuage" style="height: 48px;">
+            </div>
+        </div>
+
+        <!-- Main content -->
+        <div style="padding: 40px 32px; color: #333333;">
+            <h2 style="margin: 0 0 24px 0; color: #0f1424; font-size: 24px; font-weight: 600;">Verify Your Email</h2>
+            
+            <div style="background-color: #f8f9fc; border-radius: 8px; padding: 24px; margin-bottom: 24px;">
+                <p style="margin: 0 0 16px 0; font-size: 16px; line-height: 1.5;">Hello,</p>
+                
+                <p style="margin: 0 0 16px 0; font-size: 16px; line-height: 1.5;">Welcome to Conuage! To complete your registration, please use this verification code:</p>
+                
+                <div style="background-color: #ffffff; border: 1px solid #e1e4e8; border-radius: 6px; padding: 16px; text-align: center; margin: 24px 0;">
+                    <span style="font-family: monospace; font-size: 24px; font-weight: 600; color: #4285f4;">{{ code }}</span>
+                </div>
+                
+                <p style="margin: 0; font-size: 16px; line-height: 1.5;">This code will expire in 10 minutes.</p>
+            </div>
+
+            <!-- Security Notice -->
+            <div style="margin: 32px 0 0 0; padding-top: 24px; border-top: 1px solid #e1e4e8;">
+                <p style="margin: 0; font-size: 14px; color: #666666;">For security reasons, never share this code with anyone. Conuage will never ask for your verification code via email.</p>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div style="background-color: #0f1424; padding: 24px; text-align: center;">
+            <p style="margin: 0; color: #ffffff; font-size: 14px;"> 2025 Conuage. All rights reserved.</p>
+            <p style="margin: 12px 0 0 0; color: #8b92a5; font-size: 12px;">This is an automated message, please do not reply directly to this email.</p>
+        </div>
+    </div>
 </body>
 </html>

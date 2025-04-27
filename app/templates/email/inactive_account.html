@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Account Access Notification - Conuage</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; line-height: 1.6;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+            <h1 style="color: #333;">Account Access Notification</h1>
+        </div>
+
+        <div style="padding: 20px; background-color: #f8f9fc; border-radius: 8px;">
+            <p>Hello {{ first_name }},</p>
+            
+            <p>Thank you for trying to access Conuage. We noticed that you were unable to log in because:</p>
+            
+            {% if is_org_inactive %}
+            <p style="color: #e74c3c;"><strong>Your organization is currently inactive.</strong></p>
+            {% endif %}
+            
+            {% if is_user_inactive %}
+            <p style="color: #e74c3c;"><strong>Your account is currently inactive.</strong></p>
+            {% endif %}
+            
+            <p>To resolve this, please contact your organization administrators:</p>
+            
+            <div style="background-color: #fff; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                {% for admin in org_admins %}
+                <div style="margin-bottom: 10px;">
+                    <strong>{{ admin.name }}</strong><br>
+                    {{ admin.email }}
+                </div>
+                {% endfor %}
+            </div>
+            
+            <p>If you continue to experience issues, please reach out to our support team.</p>
+            
+            <p>Best regards,<br>The Conuage Team</p>
+        </div>
+    </div>
+</body>
+</html>

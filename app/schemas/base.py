@@ -201,8 +201,11 @@ class UserLocationUpdate(UserLocationBase):
     pass
 
 class UserLocationResponse(UserLocationBase):
+    """Response model for user location"""
     id: UUID
-    user_id: UUID
+    location_id: UUID
+    location_name: str
+    is_primary: bool
     created_at: datetime
     updated_at: datetime
 
@@ -300,6 +303,12 @@ class Folder(FolderBase):
     created_at: datetime
     updated_at: datetime
     created_by: UUID
+
+class FolderWithChildren(Folder):
+    """Folder model with children for hierarchical structure"""
+    children: List["FolderWithChildren"] = []
+
+FolderWithChildren.update_forward_refs()
 
 class DocumentEmbedding(BaseModel):
     """Schema for document embeddings"""

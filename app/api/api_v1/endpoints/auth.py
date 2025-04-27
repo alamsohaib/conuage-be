@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.core.auth import get_current_user
 from app.core.mail import send_verification_email as send_mail_verification
 from app.core.mail import send_reset_code_email as send_mail_reset_code
+from app.core.mail import send_inactive_account_email as send_mail_inactive_account
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -58,6 +59,17 @@ async def send_reset_code_email(email: str, code: str):
         # Don't raise the exception - we still want the API to work even if email fails
         pass
 
+async def send_inactive_account_email(email_to: str, first_name: str, is_org_inactive: bool, is_user_inactive: bool, org_admins: list):
+    """Send inactive account notification email"""
+    # Send actual email
+    try:
+        await send_mail_inactive_account(email_to, first_name, is_org_inactive, is_user_inactive, org_admins)
+        print(f"Inactive account email sent successfully to {email_to}")
+    except Exception as e:
+        print(f"Error sending inactive account email to {email_to}: {str(e)}")
+        # Don't raise the exception - we still want the API to work even if email fails
+        pass
+
 @router.post("/signup")
 async def signup(
     user_data: UserSignUp,
@@ -86,11 +98,33 @@ async def signup(
         
         if not org.data:
             print("Creating new organization")
-            # Create new organization
+            
+            # Get the default pricing plan
+            default_plan = db.table('pricing_plans')\
+                .select("*")\
+                .eq('is_active', True)\
+                .eq('default', True)\
+                .single()\
+                .execute()
+                
+            if not default_plan.data:
+                print("WARNING: No default pricing plan found")
+                raise HTTPException(
+                    status_code=500,
+                    detail="System configuration error: No default pricing plan found"
+                )
+            
+            default_plan_id = default_plan.data['id']
+            daily_token_limit = default_plan.data['daily_token_limit_per_user']
+            
+            # Create new organization with default plan
             org_data = {
                 "name": org_name,
                 "is_active": True,
-                "auto_signup_enabled": True
+                "auto_signup_enabled": True,
+                "selected_pricing_plan_id": default_plan_id,
+                "number_of_users_paid": 10,  # Default 10 users
+                "subscription_start_date": datetime.now(pytz.UTC).isoformat()
             }
             org_response = db.table('organizations').insert(org_data).execute()
             org_id = org_response.data[0]['id']
@@ -104,19 +138,18 @@ async def signup(
             }
             print("Creating corporate location with data:", json.dumps(location_data, cls=UUIDEncoder))
             location_response = db.table('locations').insert(location_data).execute()
-            default_location_id = location_response.data[0]['id']  # Set default_location_id here
+            default_location_id = location_response.data[0]['id']
             print(f"Created location with ID: {default_location_id}")
             
             # Set default location for organization
             db.table('organizations').update({"default_location_id": default_location_id}).eq('id', org_id).execute()
             print(f"Set default location for organization {org_id} to {default_location_id}")
             
-            # User will be org admin and automatically active
+            # First user will be org admin and automatically active
             role = "org_admin"
-            initial_status = "active"  # First user is automatically active
+            initial_status = "active"
         else:
             print("Using existing organization")
-            # Use existing organization
             org_id = org.data[0]['id']
             print(f"Organization ID: {org_id}")
             
@@ -145,7 +178,7 @@ async def signup(
                 )
             
             auto_signup_enabled = org.data[0].get('auto_signup_enabled', False)
-            default_location_id = org.data[0].get('default_location_id')  # Get default_location_id here
+            default_location_id = org.data[0].get('default_location_id')
             number_of_users_paid = org.data[0].get('number_of_users_paid', 0)
             
             # Count current active users in the organization
@@ -163,38 +196,9 @@ async def signup(
                 print("WARNING: Adding this user would exceed the paid user limit")
                 initial_status = "pending"
                 auto_signup_enabled = False  # Force auto-signup off to keep user in pending state
-            
-            # If no default location exists, keep user in pending status regardless of auto_signup_enabled
-            if not default_location_id:
-                initial_status = "pending"
-                print("DEBUG: No default location, setting initial_status to: pending")
             else:
-                # Verify the default location exists and belongs to the organization
-                location = db.table('locations')\
-                    .select("*")\
-                    .eq('id', default_location_id)\
-                    .eq('organization_id', org_id)\
-                    .single()\
-                    .execute()
-                
-                print(f"DEBUG: Location query result: {location.data}")
-                    
-                if location.data:
-                    # Explicitly set status based on auto_signup_enabled and user limit
-                    if auto_signup_enabled and current_active_users < number_of_users_paid:
-                        initial_status = "active"
-                        print("DEBUG: auto_signup_enabled is True and under user limit, setting initial_status to: active")
-                    else:
-                        initial_status = "pending"
-                        print("DEBUG: auto_signup_enabled is False or over user limit, setting initial_status to: pending")
-                    print(f"Using organization's default location: {default_location_id}")
-                    print(f"Organization auto_signup_enabled: {auto_signup_enabled}, setting status to: {initial_status}")
-                else:
-                    # Invalid default location
-                    initial_status = "pending"
-                    print("DEBUG: Invalid default location, setting initial_status to: pending")
-            
-            role = "end_user"
+                role = "end_user"  # Changed from "user" to "end_user" to match valid roles
+                initial_status = "active" if auto_signup_enabled else "pending"
         
         # Create user with minimal data first
         initial_user_data = {
@@ -327,6 +331,7 @@ async def verify_email(
 
 @router.post("/login", response_model=Token)
 async def login(
+    background_tasks: BackgroundTasks,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Client = Depends(get_db)
 ):
@@ -340,13 +345,15 @@ async def login(
     try:
         print(f"Login attempt for email: {form_data.username}")
         
-        # First get the user
+        # First get the user with organization info
         user_query = db.table('users')\
-            .select("*")\
+            .select(
+                "*, organizations(is_active)"
+            )\
             .eq('email', form_data.username)\
             .single()\
             .execute()
-            
+        
         if not user_query.data:
             raise HTTPException(
                 status_code=401,
@@ -355,28 +362,10 @@ async def login(
             )
             
         user_data = user_query.data
-        print(f"Found user: {user_data.get('email')}")
+        print(f"User data: {user_data}")  # Debug print
         
-        # Then get the organization status
-        org_query = db.table('organizations')\
-            .select("is_active")\
-            .eq('id', user_data['organization_id'])\
-            .single()\
-            .execute()
-            
-        if not org_query.data:
-            raise HTTPException(
-                status_code=401,
-                detail="Organization not found",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-            
-        # Combine user and org data
-        user_data['org_is_active'] = org_query.data.get('is_active', False)
-        print(f"Organization active status: {user_data['org_is_active']}")
-            
         # Verify password
-        if not verify_password(form_data.password, user_data["password_hash"]):
+        if not verify_password(form_data.password, user_data.get("password_hash", "")):
             raise HTTPException(
                 status_code=401,
                 detail="Incorrect email or password",
@@ -384,7 +373,7 @@ async def login(
             )
             
         # Check if email is verified
-        email_verified = user_data.get("email_verified")
+        email_verified = user_data.get("email_verified", False)
         print(f"Email verified status: {email_verified}")
         if not email_verified:
             raise HTTPException(
@@ -393,35 +382,63 @@ async def login(
                 headers={"WWW-Authenticate": "Bearer"},
             )
             
-        # Check if user is active
-        user_status = user_data.get("status")
-        print(f"User status: {user_status}")
-        if user_status != "active":
-            raise HTTPException(
-                status_code=401,
-                detail="Your account is not active. Please contact your administrator.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        # Check if user or org is inactive and get org admins if needed
+        user_status = user_data.get("status", "inactive")
+        org_data = user_data.get('organizations', {})
+        print(f"Organization data: {org_data}")  # Debug print
+        org_is_active = org_data.get('is_active', False) if org_data else False
+        
+        if user_status != "active" or not org_is_active:
+            # Get org admins
+            org_admins = db.table('users')\
+                .select("first_name, last_name, email")\
+                .eq('organization_id', user_data['organization_id'])\
+                .eq('role', 'org_admin')\
+                .execute()
+                
+            admin_list = [
+                {
+                    "name": f"{admin['first_name']} {admin['last_name']}",
+                    "email": admin['email']
+                }
+                for admin in org_admins.data
+            ]
             
-        # Check if organization is active
-        if not user_data['org_is_active']:
-            raise HTTPException(
-                status_code=401,
-                detail="Your organization is not active. Please contact your administrator.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            print(f"Sending inactive account email to {user_data.get('email')} with admins: {admin_list}")  # Debug print
             
-        # All checks passed, create access token
+            try:
+                # Send inactive account email
+                await send_mail_inactive_account(
+                    email_to=user_data.get('email'),
+                    first_name=user_data.get('first_name', ''),
+                    is_org_inactive=not org_is_active,
+                    is_user_inactive=user_status != "active",
+                    org_admins=admin_list
+                )
+                print("Inactive account email sent successfully")
+            except Exception as e:
+                print(f"Error sending inactive account email: {str(e)}")
+            
+            # Raise appropriate error
+            if user_status != "active":
+                raise HTTPException(
+                    status_code=401,
+                    detail="Your account is not active. Please contact your administrator.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            else:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Your organization is not active. Please contact your administrator.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        
+        # Create access token
         access_token = create_access_token(
-            data={
-                "sub": user_data["email"],
-                "user_id": str(user_data["id"]),
-                "organization_id": str(user_data["organization_id"]),
-                "role": user_data["role"]
-            }
+            data={"sub": user_data["email"]}
         )
         
-        # Update last login timestamp
+        # Update last login
         db.table('users')\
             .update({"last_login": datetime.utcnow().isoformat()})\
             .eq('id', user_data["id"])\

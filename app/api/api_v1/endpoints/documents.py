@@ -23,7 +23,8 @@ from app.schemas.base import (
     Folder, FolderCreate, FolderUpdate,
     Document, DocumentCreate, DocumentUpdate,
     User, DocumentEmbedding, DocumentProcessResponse,
-    DocumentDeleteResponse, FolderDeleteResponse
+    DocumentDeleteResponse, FolderDeleteResponse,
+    FolderWithChildren
 )
 from app.core.auth import get_current_user
 from app.core.embeddings import get_embeddings
@@ -977,3 +978,63 @@ async def delete_folder(
         documents_deleted=len(documents.data),
         subfolders_deleted=len(subfolders.data)
     )
+
+@router.get("/folders/all", response_model=List[FolderWithChildren])
+async def list_all_folders(
+    location_id: UUID,
+    current_user: Dict = Depends(get_current_user),
+    db: Client = Depends(get_db)
+):
+    """List all folders in a location including their hierarchy
+    
+    Args:
+        location_id: UUID of the location to list folders from
+        current_user: Current authenticated user
+        db: Database client
+        
+    Returns:
+        List of folders with their children
+        
+    Raises:
+        HTTPException: If user doesn't have access or other errors occur
+    """
+    # Check if user has access to location
+    location_access = db.table('user_locations')\
+        .select("*")\
+        .eq('user_id', str(current_user["id"]))\
+        .eq('location_id', str(location_id))\
+        .execute()
+        
+    if not location_access.data:
+        raise HTTPException(status_code=403, detail="No access to this location")
+    
+    try:
+        # Get all folders in the location
+        folders = db.table('folders')\
+            .select("*")\
+            .eq('location_id', str(location_id))\
+            .execute()
+            
+        if not folders.data:
+            return []
+            
+        # Create a map of folders by their IDs for easy lookup
+        folder_map = {folder['id']: {**folder, 'children': []} for folder in folders.data}
+        
+        # Build the folder hierarchy
+        root_folders = []
+        for folder in folders.data:
+            if folder['parent_folder_id'] is None:
+                # This is a root folder
+                root_folders.append(folder_map[folder['id']])
+            else:
+                # This is a child folder, add it to its parent's children
+                parent_id = folder['parent_folder_id']
+                if parent_id in folder_map:
+                    folder_map[parent_id]['children'].append(folder_map[folder['id']])
+        
+        return root_folders
+        
+    except APIError as e:
+        logger.error(f"Error listing all folders: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list folders")

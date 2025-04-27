@@ -62,3 +62,66 @@ async def send_reset_code_email(email: str, code: str) -> None:
         template_name="reset_password",
         template_body={"code": code}
     )
+
+async def send_booking_confirmation_email(email: str, name: str) -> None:
+    """Send demo booking confirmation email"""
+    await send_email_template(
+        email_to=email,
+        subject="Thank You for Your Demo Request",
+        template_name="booking_confirmation",
+        template_body={"name": name}
+    )
+
+async def send_account_setup_email(
+    email_to: str,
+    first_name: str,
+    role: str,
+    locations: List[dict]
+) -> None:
+    """Send account setup confirmation email"""
+    # Convert locations to the format expected by the template
+    location_list = [{"name": loc.location_name} for loc in locations]
+    
+    template_body = {
+        "first_name": first_name,
+        "email": email_to,
+        "role": role.replace('_', ' ').title(),  # Convert 'org_admin' to 'Org Admin'
+        "locations": location_list
+    }
+    
+    await send_email_template(
+        email_to=email_to,
+        subject="Welcome to Conuage - Your Account is Ready",
+        template_name="account_setup",
+        template_body=template_body
+    )
+
+async def send_inactive_account_email(
+    email_to: str,
+    first_name: str,
+    is_org_inactive: bool,
+    is_user_inactive: bool,
+    org_admins: List[dict]
+) -> None:
+    """Send email notification when user tries to login to inactive account/org"""
+    print(f"Preparing inactive account email for {email_to}")  # Debug print
+    
+    template_body = {
+        "first_name": first_name,
+        "is_org_inactive": is_org_inactive,
+        "is_user_inactive": is_user_inactive,
+        "org_admins": org_admins
+    }
+    print(f"Template body: {template_body}")  # Debug print
+    
+    try:
+        await send_email_template(
+            email_to=email_to,
+            subject="Important: Conuage Account Access Notification",
+            template_name="inactive_account",
+            template_body=template_body
+        )
+        print(f"Inactive account email sent successfully to {email_to}")
+    except Exception as e:
+        print(f"Error in send_inactive_account_email: {str(e)}")
+        raise  # Re-raise the exception for proper error handling
