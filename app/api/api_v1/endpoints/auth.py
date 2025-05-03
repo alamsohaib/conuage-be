@@ -298,7 +298,7 @@ async def verify_email(
             .eq('user_id', user.data['id'])\
             .eq('type', 'email_verification')\
             .eq('used', False)\
-            .order('created_at.desc')\
+            .order('created_at', desc=True)\
             .limit(1)\
             .execute()
             
